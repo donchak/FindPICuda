@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <math.h>
 #include <assert.h>
+#include <chrono>
+
 
 // CUDA runtime
 #include <cuda_runtime.h>
@@ -34,6 +36,7 @@ __global__ void preparePoints(const TPointData *input, TPointData *output, int c
 
 __global__ void calcLength(const TPointData *input, int count, double* accumulator) {
 	__shared__ double local_lengths[MAX_THREADS_PER_BLOCK];
+
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i < count)
 	{
@@ -45,6 +48,7 @@ __global__ void calcLength(const TPointData *input, int count, double* accumulat
 		local_lengths[threadIdx.x] = length;
 	}
 
+	//wait for all threads in block
 	__syncthreads();
 
 	if (threadIdx.x == 0) {
@@ -81,18 +85,24 @@ int main(int argc, char **argv) {
 
 	// Copy the host input vectors in host memory to the device input vectors in
 	// device memory
-	printf("Copy input data from the host memory to the CUDA device\n");
+	std::cout << "Copy input data from the host memory to the CUDA device" << std::endl;
 	checkCudaErrors(cudaMemcpy(d_iV, h_V, i_size, cudaMemcpyHostToDevice));
 
+	std::chrono::nanoseconds fullDuration;
 
-	for (int i = 0; i < 22; i++) {
+	for (int i = 1; i <= 22; i++) {
+
+		std::cout << std::endl << "Iteration #" << i << std::endl;
+
+		std::chrono::high_resolution_clock::time_point iterationStart = std::chrono::high_resolution_clock::now();
 
 		TPointData * d_oV = NULL;
 		checkCudaErrors(cudaMalloc((void **)&d_oV, i_size  * 2));
 
 		int threadsPerBlock = i_count < MAX_THREADS_PER_BLOCK ? i_count : MAX_THREADS_PER_BLOCK;
 		int blocksPerGrid = (i_count + threadsPerBlock - 1) / threadsPerBlock;
-		printf("CUDA kernel launch with %d blocks of %d threads for %d items\n", blocksPerGrid, threadsPerBlock, i_count);
+
+		std::cout << "CUDA kernel launch (preparePoints) with " << blocksPerGrid << " blocks of " << threadsPerBlock << " threads for "  << i_count << " items" << std::endl;
 
 		preparePoints<<<blocksPerGrid, threadsPerBlock>>>(d_iV, d_oV, i_count);
 
@@ -109,8 +119,8 @@ int main(int argc, char **argv) {
 
 		threadsPerBlock = i_count < MAX_THREADS_PER_BLOCK ? i_count : MAX_THREADS_PER_BLOCK;
 		blocksPerGrid = (i_count + threadsPerBlock - 1) / threadsPerBlock;
-		printf("CUDA kernel launch with %d blocks of %d threads for %d items\n", blocksPerGrid, threadsPerBlock, i_count);
 
+		std::cout << "CUDA kernel launch (calcLength) with " << blocksPerGrid << " blocks of " << threadsPerBlock << " threads for " << i_count << " items" << std::endl;
 
 		double result = 0;
 		double *h_accumelator = NULL;
@@ -134,9 +144,19 @@ int main(int argc, char **argv) {
 		checkCudaErrors(cudaFree(d_accumulator));
 		free(h_accumelator);
 
-		fprintf(stdout, "Expected Pi:	%1.16f\n", 3.1415926535897931);
-		fprintf(stdout, "Calculated Pi:	%1.16f\n", result / 2);
+		std::chrono::high_resolution_clock::time_point iterationEnd = std::chrono::high_resolution_clock::now();
+
+		auto iterationDuration = iterationEnd - iterationStart;
+
+		fullDuration = fullDuration + iterationDuration;
+
+		std::cout << "Duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(iterationDuration).count() << "ms" << std::endl;
+		std::cout << "Expected Pi:	3.1415926535897931" << std::endl;
+		std::cout.precision(17);
+		std::cout << "Calculated Pi:	" << std::fixed << result / 2 << std::endl;
 	}
+
+	std::cout << "Full duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(fullDuration).count() << "ms" << std::endl;
 
 	// Free device global memory
 
