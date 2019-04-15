@@ -5,6 +5,7 @@
 
 // CUDA runtime
 #include <cuda_runtime.h>
+#include "device_launch_parameters.h"
 
 // Helper functions and utilities to work with CUDA
 #include <helper_functions.h>
@@ -12,12 +13,12 @@
 
 #include "Common.h"
 
-__global__ void preparePoints(const TPointData *input, TPointData *output, int count)
-{
+#define MAX_THREADS_PER_BLOCK 1024
+
+__global__ void preparePoints(const TPointData *input, TPointData *output, int count) {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 
-	if (i < count)
-	{
+	if (i < count) {
 		auto supportPoint = input[i];
 		auto nextSupportPoint = input[(i + 1) % count];
 		double nextPointX = (supportPoint.X + nextSupportPoint.X) / 2;
@@ -31,9 +32,8 @@ __global__ void preparePoints(const TPointData *input, TPointData *output, int c
 	}
 }
 
-__global__ void calcLength(const TPointData *input, int count, double* accumulator)
-{
-	__shared__ double local_lengths[256];
+__global__ void calcLength(const TPointData *input, int count, double* accumulator) {
+	__shared__ double local_lengths[MAX_THREADS_PER_BLOCK];
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i < count)
 	{
@@ -44,11 +44,12 @@ __global__ void calcLength(const TPointData *input, int count, double* accumulat
 		double length = sqrt(diffX * diffX + diffY * diffY);
 		local_lengths[threadIdx.x] = length;
 	}
+
 	__syncthreads();
 
 	if (threadIdx.x == 0) {
 		double local_sum = 0;
-		for (int j = i, int local_index = 0; i < count; i++, local_index++) {
+		for (int j = i, int local_index = 0; j < count && local_index < blockDim.x; j++, local_index++) {
 			local_sum += local_lengths[local_index];
 		}
 		accumulator[blockIdx.x] = local_sum;
@@ -84,14 +85,14 @@ int main(int argc, char **argv) {
 	checkCudaErrors(cudaMemcpy(d_iV, h_V, i_size, cudaMemcpyHostToDevice));
 
 
-	for (int i = 0; i < 10; i++) {
+	for (int i = 0; i < 22; i++) {
 
 		TPointData * d_oV = NULL;
 		checkCudaErrors(cudaMalloc((void **)&d_oV, i_size  * 2));
 
-		int threadsPerBlock = i_count < 256 ? i_count : 256;
+		int threadsPerBlock = i_count < MAX_THREADS_PER_BLOCK ? i_count : MAX_THREADS_PER_BLOCK;
 		int blocksPerGrid = (i_count + threadsPerBlock - 1) / threadsPerBlock;
-		printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+		printf("CUDA kernel launch with %d blocks of %d threads for %d items\n", blocksPerGrid, threadsPerBlock, i_count);
 
 		preparePoints<<<blocksPerGrid, threadsPerBlock>>>(d_iV, d_oV, i_count);
 
@@ -106,9 +107,9 @@ int main(int argc, char **argv) {
 		i_count = i_count * 2;
 		i_size = i_size * 2;
 
-		threadsPerBlock = (i_count * 2) < 256 ? i_count : 256;
+		threadsPerBlock = i_count < MAX_THREADS_PER_BLOCK ? i_count : MAX_THREADS_PER_BLOCK;
 		blocksPerGrid = (i_count + threadsPerBlock - 1) / threadsPerBlock;
-		printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+		printf("CUDA kernel launch with %d blocks of %d threads for %d items\n", blocksPerGrid, threadsPerBlock, i_count);
 
 
 		double result = 0;
@@ -124,7 +125,7 @@ int main(int argc, char **argv) {
 		cudaDeviceSynchronize();
 		checkCudaErrors(cudaGetLastError());
 
-		checkCudaErrors(cudaMemcpy(h_accumelator, d_accumulator, sizeof(double), cudaMemcpyDeviceToHost));
+		checkCudaErrors(cudaMemcpy(h_accumelator, d_accumulator, sizeof(double) * blocksPerGrid, cudaMemcpyDeviceToHost));
 
 		for (int j = 0; j < blocksPerGrid; j++) {
 			result += h_accumelator[j];
@@ -133,7 +134,8 @@ int main(int argc, char **argv) {
 		checkCudaErrors(cudaFree(d_accumulator));
 		free(h_accumelator);
 
-		fprintf(stdout, "Result is %f\n", result / 2);
+		fprintf(stdout, "Expected Pi:	%1.16f\n", 3.1415926535897931);
+		fprintf(stdout, "Calculated Pi:	%1.16f\n", result / 2);
 	}
 
 	// Free device global memory
